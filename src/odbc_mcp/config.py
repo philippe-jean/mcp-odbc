@@ -23,6 +23,7 @@ class ODBCConnection(BaseModel):
     database: Optional[str] = None
     additional_params: Dict[str, str] = Field(default_factory=dict)
     readonly: bool = True  # Enforce read-only mode
+    exclude_tables: List[str] = Field(default_factory=list)  # Blocked tables/patterns (e.g. "GL_*", "Payment")
     
     @validator('connection_string', 'dsn', 'username', 'password', 'driver', 'server', 'database', pre=True)
     def empty_str_to_none(cls, v):
@@ -107,11 +108,17 @@ def load_from_ini(file_path: str) -> ServerConfig:
         additional_params = {}
         for key, value in connection_config.items():
             if key not in ['connection_string', 'dsn', 'username', 'password', 
-                          'driver', 'server', 'database', 'readonly']:
+                          'driver', 'server', 'database', 'readonly', 'exclude_tables']:
                 additional_params[key] = value
                 
         # Create the connection object
         readonly = connection_config.get('readonly', 'true').lower() in ['true', 'yes', '1', 'on']
+
+        # exclude_tables: comma-separated list in the .ini file
+        # Supports exact names ("Payment") and wildcard prefixes ("GL_*")
+        exclude_tables_raw = connection_config.get('exclude_tables', '')
+        exclude_tables = [t.strip() for t in exclude_tables_raw.split(',') if t.strip()]
+
         connection = ODBCConnection(
             name=section,
             connection_string=connection_config.get('connection_string'),
@@ -122,7 +129,8 @@ def load_from_ini(file_path: str) -> ServerConfig:
             server=connection_config.get('server'),
             database=connection_config.get('database'),
             additional_params=additional_params,
-            readonly=readonly
+            readonly=readonly,
+            exclude_tables=exclude_tables
         )
         
         connections[section] = connection

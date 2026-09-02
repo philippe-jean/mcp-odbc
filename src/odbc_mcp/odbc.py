@@ -103,6 +103,41 @@ class ODBCHandler:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to '{connection_name}': {str(e)}")
             
+    def _get_connection_config(self, connection_name: Optional[str] = None) -> ODBCConnection:
+        """Resolve a connection name (or the default) to its config object."""
+        resolved_name = connection_name or self.default_connection
+        if resolved_name is None and len(self.connections) == 1:
+            resolved_name = list(self.connections.keys())[0]
+        return self.connections[resolved_name]
+
+    def _is_table_excluded(self, table_name: str, connection_config: ODBCConnection) -> bool:
+        """
+        Check whether table_name matches an exclude_tables rule for this connection.
+        Supports exact names ("Payment") and wildcard prefixes ("GL_*").
+        """
+        if not connection_config.exclude_tables:
+            return False
+
+        # Keep only the table name (strip any schema prefix)
+        simple_name = table_name.split('.')[-1].strip('`"[]').upper()
+
+        for pattern in connection_config.exclude_tables:
+            pattern = pattern.strip().upper()
+            if not pattern:
+                continue
+            if pattern.endswith('*'):
+                if simple_name.startswith(pattern[:-1]):
+                    return True
+            elif simple_name == pattern:
+                return True
+        return False
+
+    def _extract_table_names(self, sql: str) -> List[str]:
+        """Extract table names referenced after FROM / JOIN / INTO / UPDATE."""
+        pattern = r'\b(?:FROM|JOIN|INTO|UPDATE)\s+([`"\[]?[A-Za-z_][A-Za-z0-9_\.]*[`"\]]?)'
+        matches = re.findall(pattern, sql, re.IGNORECASE)
+        return [m.strip('`"[]') for m in matches]
+
     def list_connections(self) -> List[str]:
         """List all available connection names."""
         return list(self.connections.keys())
@@ -133,12 +168,15 @@ class ODBCHandler:
             List of dictionaries with table information
         """
         connection = self.get_connection(connection_name)
+        connection_config = self._get_connection_config(connection_name)
         cursor = connection.cursor()
         
         tables = []
         try:
             for table_info in cursor.tables():
                 if table_info.table_type == 'TABLE':
+                    if self._is_table_excluded(table_info.table_name, connection_config):
+                        continue
                     tables.append({
                         "catalog": table_info.table_cat or "",
                         "schema": table_info.table_schem or "",
@@ -153,6 +191,8 @@ class ODBCHandler:
                 sql_tables = []
                 cursor.execute("SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
                 for row in cursor.fetchall():
+                    if self._is_table_excluded(row[2], connection_config):
+                        continue  # skip blocked table
                     sql_tables.append({
                         "catalog": row[0] or "",
                         "schema": row[1] or "",
@@ -176,6 +216,7 @@ class ODBCHandler:
             List of dictionaries with column information
         """
         connection = self.get_connection(connection_name)
+        connection_config = self._get_connection_config(connection_name)
         cursor = connection.cursor()
         
         # Try to extract schema and table name
@@ -185,7 +226,10 @@ class ODBCHandler:
             table_name = schema_parts[1]
         else:
             schema_name = None
-            
+
+        if self._is_table_excluded(table_name, connection_config):
+            raise ValueError(f"Access denied: table '{table_name}' is restricted")
+
         columns = []
         try:
             # Use metadata API if available
@@ -313,10 +357,21 @@ class ODBCHandler:
         """
         # Check if query is read-only for connections with readonly flag
         connection = self.get_connection(connection_name)
-        connection_config = self.connections[connection_name or self.default_connection]
+        connection_config = self._get_connection_config(connection_name)
         
         if connection_config.readonly and not self.is_read_only_query(sql):
             raise ValueError("Write operations are not allowed on read-only connections")
+
+        # Block queries that reference an excluded table
+        referenced_tables = self._extract_table_names(sql)
+        excluded_matches = [
+            t for t in referenced_tables
+            if self._is_table_excluded(t, connection_config)
+        ]
+        if excluded_matches:
+            raise ValueError(
+                f"Access denied: query references restricted table(s): {', '.join(excluded_matches)}"
+            )
             
         # Set max rows limit
         if max_rows is None:
