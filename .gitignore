@@ -36,4 +36,3 @@ ENV/
 *.swp
 *.swo
 .DS_Store
-config/labeltraxx.ini
