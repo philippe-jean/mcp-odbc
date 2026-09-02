@@ -132,7 +132,7 @@ class ODBCHandler:
         Decide whether table_name is accessible for this connection.
 
         exclude_tables blocks by default (categories, or "*" for a full deny-all),
-        and include_tables re-authorizes specific exceptions on top of that —
+        and include_tables re-authorizes specific exceptions on top of that
         a table matching both is ALLOWED. This lets exclude_tables block a whole
         category (e.g. "GL_*") while include_tables carves out specific
         exceptions within it (e.g. "GL_Summary"), or set exclude_tables = "*"

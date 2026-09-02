@@ -125,7 +125,7 @@ def load_from_ini(file_path: str) -> ServerConfig:
         exclude_tables_raw = connection_config.get('exclude_tables', '')
         exclude_tables = [t.strip() for t in exclude_tables_raw.split(',') if t.strip()]
 
-        # include_tables: same syntax as exclude_tables, but acts as an override list —
+        # include_tables: same syntax as exclude_tables, but acts as an override list
         # a table that matches here is always allowed, even if it also matches exclude_tables.
         include_tables_raw = connection_config.get('include_tables', '')
         include_tables = [t.strip() for t in include_tables_raw.split(',') if t.strip()]
