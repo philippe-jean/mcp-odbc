@@ -24,7 +24,12 @@ class ODBCConnection(BaseModel):
     additional_params: Dict[str, str] = Field(default_factory=dict)
     readonly: bool = True  # Enforce read-only mode
     exclude_tables: List[str] = Field(default_factory=list)  # Blocked tables/patterns (e.g. "GL_*", "Payment")
-    
+    # Override list: a table matching include_tables is always allowed,
+    # even if it also matches exclude_tables. Empty = no overrides.
+    # Set exclude_tables = "*" for a deny-by-default connection where only
+    # tables listed here are reachable.
+    include_tables: List[str] = Field(default_factory=list)
+
     @validator('connection_string', 'dsn', 'username', 'password', 'driver', 'server', 'database', pre=True)
     def empty_str_to_none(cls, v):
         """Convert empty strings to None."""
@@ -108,7 +113,8 @@ def load_from_ini(file_path: str) -> ServerConfig:
         additional_params = {}
         for key, value in connection_config.items():
             if key not in ['connection_string', 'dsn', 'username', 'password', 
-                          'driver', 'server', 'database', 'readonly', 'exclude_tables']:
+                          'driver', 'server', 'database', 'readonly',
+                          'exclude_tables', 'include_tables']:
                 additional_params[key] = value
                 
         # Create the connection object
@@ -118,6 +124,11 @@ def load_from_ini(file_path: str) -> ServerConfig:
         # Supports exact names ("Payment") and wildcard prefixes ("GL_*")
         exclude_tables_raw = connection_config.get('exclude_tables', '')
         exclude_tables = [t.strip() for t in exclude_tables_raw.split(',') if t.strip()]
+
+        # include_tables: same syntax as exclude_tables, but acts as an override list —
+        # a table that matches here is always allowed, even if it also matches exclude_tables.
+        include_tables_raw = connection_config.get('include_tables', '')
+        include_tables = [t.strip() for t in include_tables_raw.split(',') if t.strip()]
 
         connection = ODBCConnection(
             name=section,
@@ -130,7 +141,8 @@ def load_from_ini(file_path: str) -> ServerConfig:
             database=connection_config.get('database'),
             additional_params=additional_params,
             readonly=readonly,
-            exclude_tables=exclude_tables
+            exclude_tables=exclude_tables,
+            include_tables=include_tables
         )
         
         connections[section] = connection

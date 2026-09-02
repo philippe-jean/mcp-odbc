@@ -110,18 +110,13 @@ class ODBCHandler:
             resolved_name = list(self.connections.keys())[0]
         return self.connections[resolved_name]
 
-    def _is_table_excluded(self, table_name: str, connection_config: ODBCConnection) -> bool:
+    def _matches_any_pattern(self, table_name: str, patterns: List[str]) -> bool:
         """
-        Check whether table_name matches an exclude_tables rule for this connection.
+        Check whether table_name matches any pattern in the list.
         Supports exact names ("Payment") and wildcard prefixes ("GL_*").
         """
-        if not connection_config.exclude_tables:
-            return False
-
-        # Keep only the table name (strip any schema prefix)
         simple_name = table_name.split('.')[-1].strip('`"[]').upper()
-
-        for pattern in connection_config.exclude_tables:
+        for pattern in patterns:
             pattern = pattern.strip().upper()
             if not pattern:
                 continue
@@ -131,6 +126,29 @@ class ODBCHandler:
             elif simple_name == pattern:
                 return True
         return False
+
+    def _is_table_allowed(self, table_name: str, connection_config: ODBCConnection) -> bool:
+        """
+        Decide whether table_name is accessible for this connection.
+
+        exclude_tables blocks by default (categories, or "*" for a full deny-all),
+        and include_tables re-authorizes specific exceptions on top of that —
+        a table matching both is ALLOWED. This lets exclude_tables block a whole
+        category (e.g. "GL_*") while include_tables carves out specific
+        exceptions within it (e.g. "GL_Summary"), or set exclude_tables = "*"
+        for a strict deny-by-default connection where only tables listed in
+        include_tables are reachable. Tables matching neither list are allowed
+        by default, unless exclude_tables contains a "*" wildcard that catches them.
+        """
+        if connection_config.include_tables:
+            if self._matches_any_pattern(table_name, connection_config.include_tables):
+                return True
+
+        if connection_config.exclude_tables:
+            if self._matches_any_pattern(table_name, connection_config.exclude_tables):
+                return False
+
+        return True
 
     def _extract_table_names(self, sql: str) -> List[str]:
         """Extract table names referenced after FROM / JOIN / INTO / UPDATE."""
@@ -175,7 +193,7 @@ class ODBCHandler:
         try:
             for table_info in cursor.tables():
                 if table_info.table_type == 'TABLE':
-                    if self._is_table_excluded(table_info.table_name, connection_config):
+                    if not self._is_table_allowed(table_info.table_name, connection_config):
                         continue
                     tables.append({
                         "catalog": table_info.table_cat or "",
@@ -191,8 +209,8 @@ class ODBCHandler:
                 sql_tables = []
                 cursor.execute("SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'")
                 for row in cursor.fetchall():
-                    if self._is_table_excluded(row[2], connection_config):
-                        continue  # skip blocked table
+                    if not self._is_table_allowed(row[2], connection_config):
+                        continue  # skip restricted table
                     sql_tables.append({
                         "catalog": row[0] or "",
                         "schema": row[1] or "",
@@ -227,7 +245,7 @@ class ODBCHandler:
         else:
             schema_name = None
 
-        if self._is_table_excluded(table_name, connection_config):
+        if not self._is_table_allowed(table_name, connection_config):
             raise ValueError(f"Access denied: table '{table_name}' is restricted")
 
         columns = []
@@ -362,15 +380,15 @@ class ODBCHandler:
         if connection_config.readonly and not self.is_read_only_query(sql):
             raise ValueError("Write operations are not allowed on read-only connections")
 
-        # Block queries that reference an excluded table
+        # Block queries that reference a restricted table (whitelist and/or blacklist)
         referenced_tables = self._extract_table_names(sql)
-        excluded_matches = [
+        restricted_matches = [
             t for t in referenced_tables
-            if self._is_table_excluded(t, connection_config)
+            if not self._is_table_allowed(t, connection_config)
         ]
-        if excluded_matches:
+        if restricted_matches:
             raise ValueError(
-                f"Access denied: query references restricted table(s): {', '.join(excluded_matches)}"
+                f"Access denied: query references restricted table(s): {', '.join(restricted_matches)}"
             )
             
         # Set max rows limit

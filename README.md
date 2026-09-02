@@ -8,6 +8,7 @@ An MCP (Model Context Protocol) server that enables LLM tools like Claude Deskto
 - Support for multiple database connections
 - Flexible configuration through config files or Claude Desktop settings
 - Read-only safeguards to prevent data modification
+- Per-connection table restrictions via `exclude_tables` and `include_tables`
 - Easy installation with UV package manager
 - Detailed error reporting and logging
 
@@ -52,6 +53,42 @@ username = your_username
 password = your_password
 readonly = true
 ```
+
+### Restricting Access to Specific Tables
+
+Use `exclude_tables` and `include_tables` on any connection to block access to sensitive tables (accounting, payroll, etc.). Both accept a comma-separated list of exact table names and/or wildcard prefixes ending in `*`. The restriction is enforced at the tool level, before any query reaches the database:
+
+- `list-tables` — restricted tables are omitted from the results
+- `get-table-schema` — raises an error if the requested table is restricted
+- `execute-query` — rejects any query whose SQL references a restricted table (checked after `FROM`, `JOIN`, `INTO`, or `UPDATE`)
+
+**How the two lists interact:** `exclude_tables` blocks access by default, and `include_tables` re-authorizes specific exceptions on top of that. A table matching both is **allowed** — `include_tables` always wins. Tables matching neither list are allowed by default.
+
+This means:
+
+- `exclude_tables` alone blocks a category, with no exceptions:
+
+  ```ini
+  exclude_tables = AP_*, AR_*, GL_*, Payment, TimeCard, TimeCard_Operation
+  ```
+
+- `exclude_tables` + `include_tables` blocks a category but carves out specific exceptions within it — e.g. block all accounting tables except a summary view:
+
+  ```ini
+  exclude_tables = GL_*, AP_*, AR_*, Payment
+  include_tables = GL_Summary
+  ```
+
+- `exclude_tables = *` turns the connection into a strict deny-by-default allow-list — only tables listed in `include_tables` are reachable, everything else is blocked:
+
+  ```ini
+  exclude_tables = *
+  include_tables = Customer, Order_*, Product, Vendor
+  ```
+
+- `include_tables` on its own (without `exclude_tables`) does **not** restrict anything — it only guarantees access to the listed tables; everything else stays reachable. Use `exclude_tables = *` if you want a real allow-list.
+
+**Note:** table detection in `execute-query` relies on a regex match rather than a full SQL parser. It reliably catches normal `SELECT`/`FROM`/`JOIN` queries, but is not a substitute for restricting access at the database/ODBC driver level for high-sensitivity data — test with representative queries before relying on it as your only safeguard.
 
 ### SQLite Configuration
 
@@ -185,6 +222,7 @@ If tables aren't showing up:
 1. Verify user permissions for the database account
 2. Check if the company code is correct (for Sage 100)
 3. Try using fully qualified table names (schema.table)
+4. Check whether `exclude_tables` / `include_tables` is configured on the connection — restricted tables are hidden from `list-tables` and blocked from queries by design (see [Restricting Access to Specific Tables](#restricting-access-to-specific-tables))
 
 ## License
 
